@@ -1,0 +1,43 @@
+name: Fetch Google Sheets Data
+
+on:
+  schedule:
+    # Run every 15 minutes (adjust as needed)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Allows manual trigger
+  push:
+    branches: [main] # Also run on push
+
+permissions:
+  contents: write # Required to commit files
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository 🛎️
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch Google Sheets Data 📦
+        uses: JamesIves/fetch-api-data-action@v2
+        with:
+          endpoint: https://sheets.googleapis.com/v4/spreadsheets/${{ secrets.GOOGLE_SHEET_ID }}/values/Sheet1?key=${{ secrets.GOOGLE_API_KEY }}
+          configuration: '{"method": "GET"}'
+
+      - name: Create Data Directory
+        run: mkdir -p data
+
+      - name: Move Data File
+        run: |
+          if [ -f "fetch-api-data-action/data.json" ]; then
+            mv fetch-api-data-action/data.json data/energy-data.json
+          fi
+
+      - name: Commit and Push Data 🚀
+        uses: test-room-7/action-update-file@v1
+        with:
+          file-path: data/energy-data.json
+          commit-msg: 'Update energy data - $(date)'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
