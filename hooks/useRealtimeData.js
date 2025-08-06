@@ -1,131 +1,112 @@
 // hooks/useRealtimeData.ts
 import { useState, useEffect, useCallback } from 'react';
-import { googleSheetsService, EnergyDataRow, RealtimeEnergyData } from '../services/googleSheetsService';
-import { isDeviceOnline, getTodayDate } from '../utils/dateHelpers';
+import { getTodayDate, isDeviceOnline } from '../utils/dateHelpers';
 
+// ----------  Types used in this file  ----------
+export interface RealtimeEnergyData {
+  Time: string;
+  ActivePower_kW: number;
+  Solar_kW: number;
+  Temperature: number;
+  Humidity: number;
+}
+
+export interface EnergyDataRow extends RealtimeEnergyData {}
+
+/* ----------  Helper to read the JSON cached by GitHub Actions ---------- */
+async function fetchJson(): Promise<{ values: string[][] } | null> {
+  try {
+    const res = await fetch('./data/energy-data.json?' + Date.now()); // cache-buster
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  } catch (err) {
+    console.error('Unable to load JSON file:', err);
+    return null;
+  }
+}
+
+/* ----------  Convert Google-Sheets style response to typed rows ---------- */
+function rowsToObjects(sheet: { values: string[][] } | null): EnergyDataRow[] {
+  if (!sheet || !sheet.values || sheet.values.length < 2) return [];
+  const [header, ...rows] = sheet.values;
+  const idx = (key: string) => header.indexOf(key);
+
+  return rows.map(r => ({
+    Time:           r[idx('Timestamp')]        ?? '',
+    ActivePower_kW: parseFloat(r[idx('Energy Usage')]      ?? '0'),
+    Solar_kW:       parseFloat(r[idx('Solar Generation')]  ?? '0'),
+    Temperature:    parseFloat(r[idx('Temperature')]       ?? '0'),
+    Humidity:       parseFloat(r[idx('Humidity')]          ?? '0')
+  }));
+}
+
+/* ----------  Main React hook ---------- */
 export const useRealtimeData = () => {
-    const [currentData, setCurrentData] = useState<RealtimeEnergyData | null>(null);
-    const [historicalData, setHistoricalData] = useState<EnergyDataRow[]>([]);
-    const [allData, setAllData] = useState<EnergyDataRow[]>([]);
-    const [todayData, setTodayData] = useState<EnergyDataRow[]>([]);
-    const [isOnline, setIsOnline] = useState(false);
-    const [loading, setLoading] = useState(false);
-    const [lastUpdateTime, setLastUpdateTime] = useState<string>('');
-    const [selectedDate, setSelectedDate] = useState(getTodayDate());
+  const [currentData,     setCurrentData]     = useState<RealtimeEnergyData | null>(null);
+  const [historicalData,  setHistoricalData]  = useState<EnergyDataRow[]>([]);
+  const [allData,         setAllData]         = useState<EnergyDataRow[]>([]);
+  const [todayData,       setTodayData]       = useState<EnergyDataRow[]>([]);
+  const [isOnline,        setIsOnline]        = useState(false);
+  const [loading,         setLoading]         = useState(false);
+  const [lastUpdateTime,  setLastUpdateTime]  = useState('');
+  const [selectedDate,    setSelectedDate]    = useState(getTodayDate());
 
-    const fetchLatestData = useCallback(async () => {
-        try {
-            console.log('🔄 Fetching latest data...');
-            const data = await googleSheetsService.getLatestData();
-            
-            if (data) {
-                setCurrentData(data);
-                setLastUpdateTime(data.Time);
-                const deviceOnline = isDeviceOnline(data.Time);
-                setIsOnline(deviceOnline);
-                
-                console.log('✅ Latest data updated:', {
-                    time: data.Time,
-                    power: data.ActivePower_kW,
-                    online: deviceOnline
-                });
-            } else {
-                console.log('❌ No latest data available');
-                setIsOnline(false);
-            }
-        } catch (error) {
-            console.error('Failed to fetch latest data:', error);
-            setIsOnline(false);
-        }
-    }, []);
+  /* ----------  Load & process the JSON once ---------- */
+  const loadJsonFile = useCallback(async () => {
+    const sheet = await fetchJson();
+    const objects = rowsToObjects(sheet);
 
-    const loadHistoricalData = useCallback(async (date: string) => {
-        setLoading(true);
-        setSelectedDate(date);
-        
-        try {
-            console.log(`📊 Loading historical data for ${date}...`);
-            const data = await googleSheetsService.getHistoricalData(date);
-            setHistoricalData(data);
-            console.log(`✅ Loaded ${data.length} historical records for ${date}`);
-        } catch (error) {
-            console.error('Failed to load historical data:', error);
-            setHistoricalData([]);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
+    setAllData(objects);
+    setTodayData(objects.filter(r => r.Time.startsWith(getTodayDate())));
+    setHistoricalData(objects.filter(r => r.Time.startsWith(selectedDate)));
 
-    const loadTodayData = useCallback(async () => {
-        try {
-            console.log('📊 Loading today\'s data...');
-            const data = await googleSheetsService.getTodayData();
-            setTodayData(data);
-            console.log(`✅ Loaded ${data.length} records for today`);
-        } catch (error) {
-            console.error('Failed to load today data:', error);
-            setTodayData([]);
-        }
-    }, []);
+    if (objects.length) {
+      const latest = objects[objects.length - 1];
+      setCurrentData(latest);
+      setLastUpdateTime(latest.Time);
+      setIsOnline(isDeviceOnline(latest.Time));
+    }
+  }, [selectedDate]);
 
-    const loadAllData = useCallback(async () => {
-        try {
-            console.log('📊 Loading all data...');
-            const data = await googleSheetsService.getAllProcessedData();
-            setAllData(data);
-            console.log(`✅ Loaded ${data.length} total records`);
-        } catch (error) {
-            console.error('Failed to load all data:', error);
-            setAllData([]);
-        }
-    }, []);
+  /* ----------  Public helpers ---------- */
+  const refreshData = useCallback(() => loadJsonFile(), [loadJsonFile]);
+  const loadHistoricalData = useCallback(
+    (date: string) => {
+      setSelectedDate(date);
+      setHistoricalData(allData.filter(r => r.Time.startsWith(date)));
+    },
+    [allData]
+  );
 
-    // Check device status periodically
-    const checkDeviceStatus = useCallback(() => {
-        if (lastUpdateTime) {
-            const deviceOnline = isDeviceOnline(lastUpdateTime);
-            setIsOnline(deviceOnline);
-            console.log(`🔍 Device status check: ${deviceOnline ? 'Online' : 'Offline'}`);
-        }
-    }, [lastUpdateTime]);
+  /* ----------  Initial load + polling ---------- */
+  useEffect(() => {
+    setLoading(true);
+    loadJsonFile().finally(() => setLoading(false));
 
-    // Initial data load and periodic updates
-    useEffect(() => {
-        console.log('🚀 Starting real-time data service...');
-        
-        // Initial load
-        fetchLatestData();
-        loadAllData();
-        loadTodayData();
-        
-        // Set up polling intervals
-        const dataInterval = setInterval(() => {
-            console.log('🔄 Polling for new data...');
-            fetchLatestData();
-            loadTodayData(); // Refresh today's data
-        }, 30000); // Every 30 seconds
+    const poll = setInterval(loadJsonFile, 5 * 60_000); // every 5 min
+    return () => clearInterval(poll);
+  }, [loadJsonFile]);
 
-        const statusInterval = setInterval(checkDeviceStatus, 60000); // Every minute
+  /* ----------  Device-online heartbeat ---------- */
+  useEffect(() => {
+    const hb = setInterval(() => {
+      if (lastUpdateTime) setIsOnline(isDeviceOnline(lastUpdateTime));
+    }, 60_000); // every min
+    return () => clearInterval(hb);
+  }, [lastUpdateTime]);
 
-        return () => {
-            console.log('🛑 Stopping real-time updates');
-            clearInterval(dataInterval);
-            clearInterval(statusInterval);
-        };
-    }, [fetchLatestData, loadAllData, loadTodayData, checkDeviceStatus]);
-
-    return {
-        currentData,
-        historicalData,
-        allData,
-        todayData,
-        isOnline,
-        loading,
-        selectedDate,
-        lastUpdateTime,
-        loadHistoricalData,
-        refreshData: fetchLatestData,
-        loadAllData,
-        loadTodayData
-    };
+  return {
+    currentData,
+    historicalData,
+    allData,
+    todayData,
+    isOnline,
+    loading,
+    selectedDate,
+    lastUpdateTime,
+    loadHistoricalData,
+    refreshData,
+    loadAllData:      loadJsonFile,
+    loadTodayData:    loadJsonFile
+  };
 };
