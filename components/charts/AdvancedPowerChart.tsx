@@ -53,7 +53,7 @@ const AdvancedPowerChartBase = ({
 
   const powerScale = scaleLinear({
     range: [yMax, 0],
-    domain: [0, Math.max(...data.map(d => d.ActivePower_kW))],
+
     nice: true,
   });
 

@@ -13,30 +13,31 @@ export const useRealtimeData = () => {
     const [lastUpdateTime, setLastUpdateTime] = useState<string>('');
     const [selectedDate, setSelectedDate] = useState(getTodayDate());
 
-    // In your useRealtimeData hook, update the fetchLatestData function:
-const fetchLatestData = useCallback(async () => {
-    try {
-        const data = await googleSheetsService.getLatestData();
-        if (data) {
-            setCurrentData(data);
+    const fetchLatestData = useCallback(async () => {
+        try {
+            console.log('🔄 Fetching latest data...');
+            const data = await googleSheetsService.getLatestData();
             
-            // Fix: Better online detection logic
-            const dataTime = new Date(data.Time);
-            const now = new Date();
-            const diffMinutes = (now.getTime() - dataTime.getTime()) / (1000 * 60);
-            const deviceOnline = diffMinutes <= 10; // 10 minutes threshold
-            
-            setIsOnline(deviceOnline);
-            console.log('✅ Real-time data updated:', data.Time, 'Device Online:', deviceOnline);
-        } else {
+            if (data) {
+                setCurrentData(data);
+                setLastUpdateTime(data.Time);
+                const deviceOnline = isDeviceOnline(data.Time);
+                setIsOnline(deviceOnline);
+                
+                console.log('✅ Latest data updated:', {
+                    time: data.Time,
+                    power: data.ActivePower_kW,
+                    online: deviceOnline
+                });
+            } else {
+                console.log('❌ No latest data available');
+                setIsOnline(false);
+            }
+        } catch (error) {
+            console.error('Failed to fetch latest data:', error);
             setIsOnline(false);
         }
-    } catch (error) {
-        console.error('Failed to fetch latest data:', error);
-        setIsOnline(false);
-    }
-}, []);
-
+    }, []);
 
     const loadHistoricalData = useCallback(async (date: string) => {
         setLoading(true);
