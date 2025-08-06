@@ -1,23 +1,11 @@
-// next.config.js
-
-const withBundleAnalyzer = require('@next/bundle-analyzer')({
-  enabled: process.env.ANALYZE === 'true',
-});
-
-module.exports = withBundleAnalyzer({
-  reactStrictMode: true,
-  compress: true,
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'export',
+  basePath: '/iot-energy-dashboard-v2',  // Your repo name
+  assetPrefix: '/iot-energy-dashboard-v2/',
   images: {
-    domains: ['your-domain.com'],
-    formats: ['image/avif', 'image/webp'],
-  },
-  experimental: {
-    optimizeCss: true,
-  },
-  webpack(config, { isServer, dev }) {
-    if (!dev && !isServer) {
-      config.optimization.splitChunks.chunks = 'all';
-    }
-    return config;
-  },
-});
+    unoptimized: true
+  }
+}
+
+module.exports = nextConfig
