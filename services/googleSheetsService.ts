@@ -29,43 +29,49 @@ class GoogleSheetsService {
     private apiKey: string;
     
     constructor() {
-        this.sheetId = process.env.NEXT_PUBLIC_GOOGLE_SHEET_ID || '';
-        this.apiKey = process.env.NEXT_PUBLIC_GOOGLE_API_KEY || '';
+        // Add your actual values here
+        this.sheetId = '19XYljUtDynGo5K_1P91lT0pq8jRL-xvNILhiRPAR2tA'; // Replace with your sheet ID
+        this.apiKey = 'AIzaSyB--11q8sOLlEzCgNndwKbjZkoFgaZUzzc';   // Replace with your API key
     }
 
-    // Fetch JSON data from local file created by GitHub Actions
-    private async fetchLocalData(): Promise<{ values: string[][] } | null> {
+    // Direct API call to Google Sheets
+    private async fetchFromGoogleSheets(): Promise<{ values: string[][] } | null> {
         try {
-            const response = await fetch('./data/energy-data.json?' + Date.now());
+            console.log('🔄 Fetching data directly from Google Sheets...');
+            
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${this.sheetId}/values/ProcessedData!A:O?key=${this.apiKey}&majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`;
+            
+            const response = await fetch(url);
             
             if (!response.ok) {
-                console.warn('Local data file not available yet');
-                return null;
+                console.error('❌ API Error:', response.status, response.statusText);
+                throw new Error(`Google Sheets API error: ${response.status}`);
             }
             
             const data = await response.json();
+            console.log('✅ Successfully fetched', data.values?.length || 0, 'rows');
             return data;
+            
         } catch (error) {
-            console.error('Error loading local data:', error);
+            console.error('💥 Error fetching from Google Sheets:', error);
             return null;
         }
     }
 
     async getLatestData(): Promise<RealtimeEnergyData | null> {
         try {
-            console.log('🔄 Fetching latest data from local file...');
-            const data = await this.fetchLocalData();
+            const data = await this.fetchFromGoogleSheets();
             
             if (!data || !data.values || data.values.length < 2) {
-                console.warn('No data available in local file');
+                console.warn('No data available from Google Sheets');
                 return null;
             }
             
             const rows = data.values;
-            const latestRow = rows[rows.length - 1]; // Get last row (most recent)
+            const latestRow = rows[rows.length - 1]; // Get last row
             const energyData = this.parseRowToEnergyData(latestRow);
             
-            // Check if device is online based on last update time
+            // Check device status
             const dataTime = new Date(energyData.Time);
             const now = new Date();
             const diffMinutes = (now.getTime() - dataTime.getTime()) / (1000 * 60);
@@ -92,10 +98,9 @@ class GoogleSheetsService {
     async getHistoricalData(selectedDate: string): Promise<EnergyDataRow[]> {
         try {
             console.log(`📊 Loading historical data for ${selectedDate}...`);
-            const data = await this.fetchLocalData();
+            const data = await this.fetchFromGoogleSheets();
             
             if (!data || !data.values || data.values.length < 2) {
-                console.warn('No historical data available');
                 return [];
             }
             
@@ -120,11 +125,10 @@ class GoogleSheetsService {
 
     async getAllProcessedData(): Promise<EnergyDataRow[]> {
         try {
-            console.log('📊 Loading all processed data...');
-            const data = await this.fetchLocalData();
+            console.log('📊 Loading all data...');
+            const data = await this.fetchFromGoogleSheets();
             
             if (!data || !data.values || data.values.length < 2) {
-                console.warn('No processed data available');
                 return [];
             }
             
@@ -138,17 +142,16 @@ class GoogleSheetsService {
             console.log(`✅ Loaded ${allData.length} total records`);
             return allData;
         } catch (error) {
-            console.error('Error fetching all processed data:', error);
+            console.error('Error fetching all data:', error);
             return [];
         }
     }
 
-    // Alias for compatibility with existing code
+    // Alias methods for compatibility
     async getAllData(): Promise<EnergyDataRow[]> {
         return this.getAllProcessedData();
     }
 
-    // Get today's data specifically
     async getTodayData(): Promise<EnergyDataRow[]> {
         const todayDate = getTodayDate();
         return this.getHistoricalData(todayDate);
@@ -178,26 +181,6 @@ class GoogleSheetsService {
         if (pf > 0.85) return 'Good';
         if (pf > 0.75) return 'Poor';
         return 'Bad';
-    }
-
-    // Development/fallback method - returns sample data when JSON isn't available
-    private getSampleData(): EnergyDataRow {
-        return {
-            Time: new Date().toISOString(),
-            Voltage_V: 230,
-            Frequency_Hz: 50,
-            Current_A: 10.5,
-            ActivePower_kW: 2.4,
-            PowerFactor: 0.95,
-            ApparentPower_kVA: 2.5,
-            ReactivePower_kVAr: 0.75,
-            Energy_kWh: 1234.5,
-            Cost_cum_BDT: 456.78,
-            PF_Class: 'Excellent',
-            Compressor_ON: 1,
-            'DutyCycle_%_24H': 75.2,
-            Cycle_ID: 1
-        };
     }
 }
 
