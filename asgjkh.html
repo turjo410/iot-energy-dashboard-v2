@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EnergyIQ - IoT Energy Monitoring Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.12.7/Recharts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/framer-motion@10.16.4/dist/framer-motion.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-countup@6.5.3/build/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide-react@0.378.0/dist/lucide-react.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0F172A; /* slate-900 */
+        }
+        .recharts-tooltip-cursor {
+            stroke: #6366f1; /* indigo-500 */
+            stroke-width: 2;
+        }
+        .recharts-default-tooltip {
+            background-color: #1E293B !important; /* slate-800 */
+            border-color: #334155 !important; /* slate-700 */
+            border-radius: 0.75rem !important;
+        }
+        .recharts-tooltip-label {
+             color: #F8FAFC !important; /* slate-50 */
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Destructure necessary components from global objects
+        const { useState, useEffect, useMemo, useRef } = React;
+        const { motion, AnimatePresence } = window.framerMotion;
+        const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area, RadialBarChart, RadialBar } = window.Recharts;
+        const CountUp = window.ReactCountUp.default;
+        const {
+            Zap, Home, BarChart2, DollarSign, Settings, Bell, User, Search,
+            Power, PowerOff, TrendingUp, TrendingDown, Activity, Wifi,
+            CheckCircle, Download, Filter, Upload, Wind, Sun, Thermometer
+        } = window.lucide;
+        
+        // --- DATA & CALCULATIONS ---
+
+        // Bangladesh Electricity Tariff Structure (Latest 2024 rates)
+        const BD_TARIFF_STRUCTURE = {
+            residential: [
+                { min: 0, max: 50, rate: 4.63, type: 'lifeline', color: '#10B981' },
+                { min: 0, max: 75, rate: 5.26, type: 'regular', color: '#3B82F6' },
+                { min: 76, max: 200, rate: 7.20, type: 'regular', color: '#8B5CF6' },
+                { min: 201, max: 300, rate: 7.59, type: 'regular', color: '#F59E0B' },
+                { min: 301, max: 400, rate: 8.02, type: 'regular', color: '#EF4444' },
+                { min: 401, max: 600, rate: 12.67, type: 'higher', color: '#EC4899' },
+                { min: 601, max: Infinity, rate: 14.61, type: 'highest', color: '#DC2626' }
+            ],
+            demand_charge: 42,
+            service_charge: 50,
+            vat: 0.15,
+            surcharge: 0.05
+        };
+
+        // Generate fallback data if no CSV is uploaded
+        const generateFallbackData = (length = 30) => {
+            return Array.from({ length }, (_, i) => {
+                const date = new Date();
+                date.setDate(date.getDate() - (length - i - 1));
+                const consumption = 15 + Math.sin(i) * 5 + Math.random() * 2;
+                const cost = calculateBDCost(consumption).totalCost;
+                
+                return {
+                    time: date.toISOString(),
+                    voltage: +(220 + (i % 20) - 10 + Math.random() * 2).toFixed(1),
+                    activePower: +(consumption / 24 * 1000).toFixed(2), // kW
+                    powerFactor: +(0.9 + Math.random() * 0.09).toFixed(3),
+                    energy: +consumption.toFixed(2), // kWh
+                    totalCost: +cost.toFixed(2)
+                };
+            });
+        };
+        
+        // Bangladesh cost calculation
+        const calculateBDCost = (units) => {
+            let totalCost = 0;
+            let remaining = units;
+            
+            // Simplified logic for slab calculation
+            const residentialTiers = BD_TARIFF_STRUCTURE.residential.filter(t => t.type !== 'lifeline');
+            
+            for (const tier of residentialTiers) {
+                if (remaining <= 0) break;
+                const tierRange = tier.max - tier.min;
+                const unitsInTier = Math.min(remaining, tierRange);
+                
+                if (unitsInTier > 0) {
+                    totalCost += unitsInTier * tier.rate;
+                    remaining -= unitsInTier;
+                }
+            }
+             if (remaining > 0) {
+                totalCost += remaining * BD_TARIFF_STRUCTURE.residential[BD_TARIFF_STRUCTURE.residential.length - 1].rate;
+            }
+
+            const subtotal = totalCost + BD_TARIFF_STRUCTURE.service_charge;
+            const vat = subtotal * BD_TARIFF_STRUCTURE.vat;
+            const surcharge = subtotal * BD_TARIFF_STRUCTURE.surcharge;
+            
+            return {
+                energyCost: totalCost,
+                serviceCharge: BD_TARIFF_STRUCTURE.service_charge,
+                vat,
+                surcharge,
+                totalCost: subtotal + vat + surcharge,
+                avgRate: units > 0 ? (subtotal + vat + surcharge) / units : 0
+            };
+        };
+
+        // --- MAIN APP COMPONENT ---
+        function App() {
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [isClient, setIsClient] = useState(false);
+            const [csvData, setCsvData] = useState([]);
+            const [isLoading, setIsLoading] = useState(false);
+            const fileInputRef = useRef(null);
+            
+            // Static initial values to prevent hydration mismatch
+            const [realtimeData, setRealtimeData] = useState({
+                voltage: 220.0,
+                current: 10.0,
+                power: 2200,
+                energy: 5.0,
+                frequency: 50.0,
+                powerFactor: 0.95,
+                temperature: 28.0,
+            });
+
+            const [devices, setDevices] = useState([
+                { id: 1, name: 'Main Grid', type: 'Grid', status: 'active', power: 2.5, location: 'Entrance' },
+                { id: 2, name: 'Living Room AC', type: 'HVAC', status: 'active', power: 1.8, location: 'Living Room' },
+                { id: 3, name: 'Kitchen', type: 'Appliances', status: 'active', power: 0.6, location: 'Kitchen' },
+                { id: 4, name: 'Bedroom Lights', type: 'Lighting', status: 'inactive', power: 0.1, location: 'Bedroom' },
+                { id: 5, name: 'Water Heater', type: 'Appliances', status: 'active', power: 2.0, location: 'Bathroom' }
+            ]);
+
+            useEffect(() => {
+                setIsClient(true);
+                
+                const interval = setInterval(() => {
+                    setRealtimeData(prevData => ({
+                        ...prevData,
+                        voltage: +(220 + (Math.random() - 0.5) * 10).toFixed(1),
+                        power: +(2200 + (Math.random() - 0.5) * 500).toFixed(0),
+                        powerFactor: +(Math.random() * 0.1 + 0.88).toFixed(3),
+                        temperature: +(Math.random() * 5 + 26).toFixed(1),
+                    }));
+                }, 3000);
+
+                return () => clearInterval(interval);
+            }, []);
+
+            // Use processed CSV data or fallback to generated data
+            const historicalData = useMemo(() => {
+                if (csvData.length > 0) {
+                    return csvData;
+                }
+                return generateFallbackData();
+            }, [csvData]);
+
+            const todaysConsumption = historicalData.length > 0 ? historicalData[historicalData.length - 1].energy : 15.5;
+            const todaysCost = useMemo(() => calculateBDCost(todaysConsumption), [todaysConsumption]);
+
+            const toggleDevice = (id) => {
+                setDevices(devices.map(device =>
+                    device.id === id
+                        ? { ...device, status: device.status === 'active' ? 'inactive' : 'active' }
+                        : device
+                ));
+            };
+
+            const handleFileUpload = (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                setIsLoading(true);
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const text = e.target.result;
+                    const lines = text.split('\n').filter(line => line.trim() !== '');
+                    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+                    
+                    // Find the correct index for each required column
+                    const timeIndex = headers.findIndex(h => /time/i.test(h));
+                    const voltageIndex = headers.findIndex(h => /voltage/i.test(h));
+                    const powerIndex = headers.findIndex(h => /active power/i.test(h));
+                    const pfIndex = headers.findIndex(h => /power factor/i.test(h));
+                    const energyIndex = headers.findIndex(h => /energy.*kwh/i.test(h));
+                    const costIndex = headers.findIndex(h => /total cost.*bdt/i.test(h));
+
+                    const parsedData = lines.slice(1).map(line => {
+                        const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+                        return {
+                            time: values[timeIndex] || new Date().toISOString(),
+                            voltage: parseFloat(values[voltageIndex]) || 0,
+                            activePower: parseFloat(values[powerIndex]) || 0,
+                            powerFactor: parseFloat(values[pfIndex]) || 0,
+                            energy: parseFloat(values[energyIndex]) || 0,
+                            totalCost: parseFloat(values[costIndex]) || 0,
+                        };
+                    });
+                    
+                    setCsvData(parsedData);
+                    setIsLoading(false);
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="min-h-screen bg-slate-900 text-slate-300">
+                    <div className="flex">
+                        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+                        
+                        <div className="flex-1 flex flex-col">
+                            <Header 
+                                realtimeData={realtimeData} 
+                                isClient={isClient} 
+                                onUploadClick={() => fileInputRef.current && fileInputRef.current.click()}
+                            />
+                            <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" accept=".csv" />
+                            
+                            <main className="flex-1 p-4 sm:p-6 overflow-y-auto">
+                               {isLoading ? (
+                                    <div className="flex justify-center items-center h-full">
+                                        <div className="text-center">
+                                            <Upload className="h-12 w-12 text-indigo-400 mx-auto animate-pulse" />
+                                            <p className="mt-4 text-lg font-semibold">Processing your data...</p>
+                                        </div>
+                                    </div>
+                                ) : (
+                                <AnimatePresence mode="wait">
+                                    {activeTab === 'dashboard' && (
+                                        <DashboardContent 
+                                            key="dashboard"
+                                            realtimeData={realtimeData}
+                                            historicalData={historicalData}
+                                            todaysCost={todaysCost}
+                                            devices={devices}
+                                            isClient={isClient}
+                                        />
+                                    )}
+                                    {activeTab === 'analytics' && (
+                                        <AnalyticsContent 
+                                            key="analytics"
+                                            historicalData={historicalData}
+                                            realtimeData={realtimeData}
+                                            isClient={isClient}
+                                        />
+                                    )}
+                                    {activeTab === 'costing' && (
+                                        <CostingContent 
+                                            key="costing"
+                                            todaysCost={todaysCost}
+                                            isClient={isClient}
+                                        />
+                                    )}
+                                    {activeTab === 'devices' && (
+                                        <DevicesContent 
+                                            key="devices"
+                                            devices={devices}
+                                            toggleDevice={toggleDevice}
+                                            realtimeData={realtimeData}
+                                            isClient={isClient}
+                                        />
+                                    )}
+                                </AnimatePresence>
+                                )}
+                            </main>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- CHILD COMPONENTS ---
+
+        const Sidebar = ({ activeTab, setActiveTab }) => {
+            const navItems = [
+                { id: 'dashboard', name: 'Dashboard', icon: Home },
+                { id: 'analytics', name: 'Analytics', icon: BarChart2 },
+                { id: 'costing', name: 'Cost Analysis', icon: DollarSign },
+                { id: 'devices', name: 'Device Control', icon: Settings }
+            ];
+
+            return (
+                <motion.nav 
+                    initial={{ x: -250 }}
+                    animate={{ x: 0 }}
+                    transition={{ duration: 0.5, ease: "easeInOut" }}
+                    className="bg-slate-800/50 backdrop-blur-sm w-64 shadow-2xl border-r border-slate-700/50 hidden lg:block"
+                >
+                    <div className="p-6">
+                        <div className="flex items-center mb-10">
+                            <div className="bg-gradient-to-r from-indigo-500 to-purple-500 p-3 rounded-xl shadow-lg">
+                                <Zap className="h-8 w-8 text-white" />
+                            </div>
+                            <div className="ml-4">
+                                <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">
+                                    EnergyIQ
+                                </h1>
+                                <p className="text-xs text-slate-400">Smart Energy Monitor</p>
+                            </div>
+                        </div>
+
+                        <ul className="space-y-3">
+                            {navItems.map((item) => (
+                                <motion.li key={item.id} whileHover={{ x: 5 }}>
+                                    <button
+                                        onClick={() => setActiveTab(item.id)}
+                                        className={`w-full flex items-center px-4 py-3 rounded-xl transition-all duration-200 ${
+                                            activeTab === item.id
+                                                ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg'
+                                                : 'text-slate-400 hover:bg-slate-700/50 hover:text-white'
+                                        }`}
+                                    >
+                                        <item.icon className="h-5 w-5 mr-4" />
+                                        <span className="font-semibold">{item.name}</span>
+                                    </button>
+                                </motion.li>
+                            ))}
+                        </ul>
+
+                        <div className="mt-12 p-4 bg-slate-700/50 rounded-xl border border-slate-600/50">
+                            <div className="flex items-center mb-2">
+                                <CheckCircle className="h-5 w-5 text-emerald-400 mr-2" />
+                                <span className="font-semibold text-emerald-400">System Online</span>
+                            </div>
+                            <p className="text-sm text-slate-400">All IoT devices connected.</p>
+                            <div className="flex items-center mt-2 text-emerald-400">
+                                <Wifi className="h-4 w-4 mr-1.5" />
+                                <span className="text-xs font-medium">Signal: Strong</span>
+                            </div>
+                        </div>
+                    </div>
+                </motion.nav>
+            );
+        };
+
+        const Header = ({ realtimeData, isClient, onUploadClick }) => {
+            return (
+                <header className="bg-slate-800/50 backdrop-blur-sm border-b border-slate-700/50 px-6 py-4">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h2 className="text-xl sm:text-2xl font-bold text-slate-100">
+                                Energy Monitoring Dashboard
+                            </h2>
+                            <p className="text-slate-400 text-sm">
+                                Real-time IoT electricity consumption tracking
+                            </p>
+                        </div>
+                        
+                        <div className="flex items-center space-x-2 sm:space-x-4">
+                            <button onClick={onUploadClick} className="hidden sm:flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-semibold">
+                                <Upload className="h-4 w-4 mr-2" />
+                                Upload CSV
+                            </button>
+                            <button className="p-2 rounded-lg hover:bg-slate-700/50 transition-colors">
+                                <Bell className="h-5 w-5 text-slate-400" />
+                            </button>
+                            <div className="w-10 h-10 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full flex items-center justify-center ring-2 ring-slate-600">
+                                <User className="h-5 w-5 text-white" />
+                            </div>
+                        </div>
+                    </div>
+                </header>
+            );
+        };
+
+        const DashboardContent = ({ realtimeData, historicalData, todaysCost, devices, isClient }) => {
+            const activeDevices = devices.filter(d => d.status === 'active').length;
+
+            return (
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.5 }}
+                    className="space-y-6"
+                >
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                        <MetricCard title="Current Power" value={realtimeData.power} unit="W" icon={Zap} color="blue" isClient={isClient} />
+                        <MetricCard title="Today's Cost" value={todaysCost.totalCost} unit="৳" icon={DollarSign} color="green" isClient={isClient} />
+                        <MetricCard title="Voltage" value={realtimeData.voltage} unit="V" icon={Activity} color="purple" isClient={isClient} />
+                        <MetricCard title="Active Devices" value={activeDevices} unit={`/${devices.length}`} icon={Settings} color="orange" isClient={isClient} />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="lg:col-span-2">
+                            <ConsumptionChart historicalData={historicalData} />
+                        </div>
+                        <IoTDeviceCard realtimeData={realtimeData} isClient={isClient} />
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <EnergyDistributionChart devices={devices} />
+                        <CostBreakdownChart todaysCost={todaysCost} />
+                    </div>
+                </motion.div>
+            );
+        };
+
+        const MetricCard = ({ title, value, unit, icon: Icon, color, isClient }) => {
+            const colorClasses = {
+                blue: { bg: 'from-blue-500 to-indigo-600', text: 'text-blue-400' },
+                green: { bg: 'from-green-500 to-emerald-600', text: 'text-green-400' },
+                purple: { bg: 'from-purple-500 to-violet-600', text: 'text-purple-400' },
+                orange: { bg: 'from-orange-500 to-amber-600', text: 'text-orange-400' }
+            };
+
+            const getStaticValue = () => {
+                switch(title) {
+                    case "Today's Cost": return 154.90;
+                    case "Current Power": return 2200;
+                    case "Voltage": return 220.0;
+                    case "Active Devices": return 4;
+                    default: return 0;
+                }
+            };
+            
+            const displayValue = isClient ? value : getStaticValue();
+
+            return (
+                <motion.div
+                    whileHover={{ y: -5, scale: 1.02 }}
+                    className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm"
+                >
+                    <div className="flex items-start justify-between mb-4">
+                        <div className={`p-3 rounded-xl bg-gradient-to-br ${colorClasses[color].bg} shadow-md`}>
+                            <Icon className="h-6 w-6 text-white" />
+                        </div>
+                    </div>
+                    
+                    <div className="space-y-1">
+                        <p className="text-slate-400 text-sm font-medium">{title}</p>
+                        <div className="flex items-baseline">
+                            <div className="text-3xl font-bold text-slate-100" suppressHydrationWarning>
+                                {isClient ? (
+                                    <CountUp
+                                        end={displayValue}
+                                        duration={1.5}
+                                        decimals={unit === '৳' ? 2 : (unit === 'V' ? 1 : 0)}
+                                        separator=","
+                                    />
+                                ) : (
+                                    <span>
+                                        {unit === '৳' ? displayValue.toFixed(2) : Math.floor(displayValue)}
+                                    </span>
+                                )}
+                            </div>
+                            <span className="text-lg font-semibold text-slate-400 ml-1">{unit}</span>
+                        </div>
+                    </div>
+                </motion.div>
+            );
+        };
+
+        const IoTDeviceCard = ({ realtimeData, isClient }) => {
+            return (
+                <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm flex flex-col">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-bold text-slate-100">IoT Device Status</h3>
+                        <div className="flex items-center text-xs font-medium bg-emerald-500/20 text-emerald-400 px-2 py-1 rounded-full">
+                            <div className="w-2 h-2 bg-emerald-400 rounded-full mr-2 animate-pulse"></div>
+                            Connected
+                        </div>
+                    </div>
+                    
+                    <div className="flex-grow mb-4 bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl h-48 flex items-center justify-center border border-slate-600">
+                        <div className="text-center">
+                            <Zap className="h-16 w-16 text-indigo-400 mx-auto mb-2" />
+                            <p className="text-sm text-slate-300 font-semibold">Tuya Smart WiFi Plug</p>
+                        </div>
+                    </div>
+                    
+                    <div className="space-y-3 text-sm">
+                        <div className="flex justify-between"><span className="text-slate-400">Firmware</span><span className="font-semibold text-slate-200">v2.4.1</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Power Factor</span><span className="font-semibold text-slate-200" suppressHydrationWarning>{isClient ? realtimeData.powerFactor : '0.95'}</span></div>
+                        <div className="flex justify-between"><span className="text-slate-400">Temperature</span><span className="font-semibold text-slate-200" suppressHydrationWarning>{isClient ? `${realtimeData.temperature}°C` : '28.0°C'}</span></div>
+                    </div>
+                </div>
+            );
+        };
+        
+        const ConsumptionChart = ({ historicalData }) => {
+            // Format time for X-axis labels
+            const formatXAxis = (tickItem) => {
+                try {
+                    const date = new Date(tickItem);
+                    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                } catch {
+                    return tickItem; // Fallback for invalid dates
+                }
+            };
+
+            return (
+                <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                    <div className="flex items-center justify-between mb-6">
+                        <h3 className="text-lg font-bold text-slate-100">Power Consumption (kW)</h3>
+                        <div className="flex items-center space-x-2 text-xs text-slate-400">
+                            <div className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></div>
+                            <span>Live Data</span>
+                        </div>
+                    </div>
+                    
+                    <ResponsiveContainer width="100%" height={300}>
+                        <AreaChart data={historicalData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                            <defs>
+                                <linearGradient id="powerGradient" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#6366F1" stopOpacity={0.4}/>
+                                    <stop offset="95%" stopColor="#6366F1" stopOpacity={0}/>
+                                </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                            <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickFormatter={formatXAxis} />
+                            <YAxis stroke="#94A3B8" fontSize={12} unit="kW" />
+                            <Tooltip 
+                                contentStyle={{ backgroundColor: '#1E293B', border: '1px solid #334155', borderRadius: '12px' }}
+                                labelStyle={{ color: '#F1F5F9' }}
+                                formatter={(value, name) => [`${value.toFixed(2)} kW`, 'Power']}
+                            />
+                            <Area type="monotone" dataKey="activePower" stroke="#818CF8" strokeWidth={2} fill="url(#powerGradient)" />
+                        </AreaChart>
+                    </ResponsiveContainer>
+                </div>
+            );
+        };
+
+        const EnergyDistributionChart = ({ devices }) => {
+            const COLORS = ['#6366F1', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6'];
+            
+            const data = devices
+                .filter(d => d.status === 'active')
+                .map((device, index) => ({
+                    name: device.name,
+                    value: device.power,
+                    fill: COLORS[index % COLORS.length]
+                }));
+
+            return (
+                <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                    <h3 className="text-lg font-bold text-slate-100 mb-6">Device Power Distribution</h3>
+                    
+                    <ResponsiveContainer width="100%" height={300}>
+                        <PieChart>
+                            <Pie data={data} cx="50%" cy="50%" innerRadius={70} outerRadius={110} paddingAngle={5} dataKey="value">
+                                {data.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.fill} stroke={entry.fill} />)}
+                            </Pie>
+                            <Tooltip formatter={(value, name) => [`${value} kW`, name]} />
+                            <Legend iconType="circle" wrapperStyle={{ fontSize: '12px', color: '#94A3B8' }} />
+                        </PieChart>
+                    </ResponsiveContainer>
+                </div>
+            );
+        };
+
+        const CostBreakdownChart = ({ todaysCost }) => {
+            const data = [
+                { name: 'Energy', value: todaysCost.energyCost, fill: '#6366F1' },
+                { name: 'Service', value: todaysCost.serviceCharge, fill: '#10B981' },
+                { name: 'VAT (15%)', value: todaysCost.vat, fill: '#F59E0B' },
+                { name: 'Surcharge', value: todaysCost.surcharge, fill: '#EF4444' }
+            ];
+
+            return (
+                <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                    <h3 className="text-lg font-bold text-slate-100 mb-6">Today's Cost Breakdown</h3>
+                    
+                    <ResponsiveContainer width="100%" height={300}>
+                        <BarChart data={data} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                            <XAxis type="number" stroke="#94A3B8" fontSize={12} />
+                            <YAxis type="category" dataKey="name" stroke="#94A3B8" fontSize={12} width={70} />
+                            <Tooltip formatter={(value) => [`৳${value.toFixed(2)}`, 'Amount']} cursor={{ fill: 'rgba(100, 116, 139, 0.1)' }} />
+                            <Bar dataKey="value" barSize={20} />
+                        </BarChart>
+                    </ResponsiveContainer>
+                </div>
+            );
+        };
+
+        const AnalyticsContent = ({ historicalData, realtimeData, isClient }) => {
+            return (
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+                    className="space-y-6"
+                >
+                    <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-4">
+                           <div>
+                                <h3 className="text-2xl font-bold text-slate-100">Advanced Analytics</h3>
+                                <p className="text-slate-400">Deep insights into your consumption patterns</p>
+                            </div>
+                            <div className="flex space-x-2 mt-4 sm:mt-0">
+                                <button className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-semibold"><Download className="h-4 w-4 mr-2" />Export</button>
+                                <button className="flex items-center px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 transition-colors text-sm font-semibold"><Filter className="h-4 w-4 mr-2" />Filter</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                            <h4 className="text-lg font-bold text-slate-100 mb-4">Consumption & Cost Trends</h4>
+                            <ResponsiveContainer width="100%" height={300}>
+                                <LineChart data={historicalData}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                    <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickFormatter={(t) => new Date(t).toLocaleDateString('en-GB', {day:'2-digit', month:'short'})} />
+                                    <YAxis yAxisId="left" stroke="#818CF8" fontSize={12} />
+                                    <YAxis yAxisId="right" orientation="right" stroke="#34D399" fontSize={12} />
+                                    <Tooltip />
+                                    <Legend wrapperStyle={{ color: '#94A3B8' }} />
+                                    <Line yAxisId="left" type="monotone" dataKey="energy" stroke="#818CF8" strokeWidth={2} name="Energy (kWh)" dot={false} />
+                                    <Line yAxisId="right" type="monotone" dataKey="totalCost" stroke="#34D399" strokeWidth={2} name="Cost (৳)" dot={false} />
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                        <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                            <h4 className="text-lg font-bold text-slate-100 mb-4">Voltage Fluctuation</h4>
+                            <ResponsiveContainer width="100%" height={300}>
+                                <AreaChart data={historicalData}>
+                                    <defs><linearGradient id="voltageGradient" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#A78BFA" stopOpacity={0.4}/><stop offset="95%" stopColor="#A78BFA" stopOpacity={0}/></linearGradient></defs>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                    <XAxis dataKey="time" stroke="#94A3B8" fontSize={12} tickFormatter={(t) => new Date(t).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} />
+                                    <YAxis stroke="#94A3B8" fontSize={12} domain={['dataMin - 5', 'dataMax + 5']} />
+                                    <Tooltip formatter={(value) => [`${value.toFixed(1)} V`, 'Voltage']} />
+                                    <Area type="monotone" dataKey="voltage" stroke="#A78BFA" strokeWidth={2} fill="url(#voltageGradient)" />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+                </motion.div>
+            );
+        };
+        
+        const CostingContent = ({ todaysCost, isClient }) => {
+            return (
+                 <motion.div
+                    initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+                    className="space-y-6"
+                >
+                    <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                        <h3 className="text-2xl font-bold text-slate-100">Cost Analysis Dashboard</h3>
+                        <p className="text-slate-400">Breakdown based on Bangladesh electricity tariff structure.</p>
+                    </div>
+                    <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                        <h4 className="text-lg font-bold text-slate-100 mb-6">Bangladesh Electricity Tariff Structure (2024)</h4>
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse">
+                                <thead>
+                                    <tr className="border-b-2 border-slate-700">
+                                        <th className="text-left py-3 px-4 font-semibold text-slate-300">Slab (kWh)</th>
+                                        <th className="text-left py-3 px-4 font-semibold text-slate-300">Rate (৳/kWh)</th>
+                                        <th className="text-left py-3 px-4 font-semibold text-slate-300">Type</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {BD_TARIFF_STRUCTURE.residential.map((tier, index) => (
+                                        <tr key={index} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                                            <td className="py-3 px-4 text-slate-300">{tier.max === Infinity ? `${tier.min}+` : `${tier.min}-${tier.max}`}</td>
+                                            <td className="py-3 px-4 font-semibold text-slate-100">৳{tier.rate.toFixed(2)}</td>
+                                            <td className="py-3 px-4">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize bg-${tier.color.substring(1)}/10 text-${tier.color.substring(1)}`}>
+                                                    {tier.type}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </motion.div>
+            );
+        };
+
+        const DevicesContent = ({ devices, toggleDevice, realtimeData, isClient }) => {
+            return (
+                <motion.div
+                    initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+                    className="space-y-6"
+                >
+                    <div className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm">
+                        <h3 className="text-2xl font-bold text-slate-100">Device Control Panel</h3>
+                        <p className="text-slate-400">Monitor and control your connected devices.</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {devices.map((device) => (
+                            <motion.div
+                                key={device.id} whileHover={{ y: -5, scale: 1.02 }}
+                                className="bg-slate-800/50 rounded-2xl shadow-lg border border-slate-700/50 p-6 backdrop-blur-sm"
+                            >
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="flex items-center">
+                                        <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${device.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                                            {device.type === 'Grid' && <Zap className="h-6 w-6" />}
+                                            {device.type === 'HVAC' && <Wind className="h-6 w-6" />}
+                                            {device.type === 'Appliances' && <Activity className="h-6 w-6" />}
+                                            {device.type === 'Lighting' && <Sun className="h-6 w-6" />}
+                                        </div>
+                                        <div className="ml-4">
+                                            <h4 className="font-semibold text-slate-100">{device.name}</h4>
+                                            <p className="text-sm text-slate-400">{device.location}</p>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => toggleDevice(device.id)} className={`p-3 rounded-full transition-all ${device.status === 'active' ? 'bg-emerald-500 text-white' : 'bg-slate-600 text-slate-300'}`}>
+                                        <Power className="h-5 w-5" />
+                                    </button>
+                                </div>
+                                <div className="space-y-3 text-sm">
+                                    <div className="flex justify-between items-center"><span className="text-slate-400">Power</span><span className="font-semibold text-slate-200">{device.status === 'active' ? `${device.power} kW` : '0.0 kW'}</span></div>
+                                    <div className="flex justify-between items-center"><span className="text-slate-400">Status</span><span className={`px-2 py-1 rounded-full text-xs font-medium ${device.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>{device.status === 'active' ? 'Online' : 'Offline'}</span></div>
+                                </div>
+                            </motion.div>
+                        ))}
+                    </div>
+                </motion.div>
+            );
+        };
+        
+        // Render the main App component
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
